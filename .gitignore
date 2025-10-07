@@ -1,1 +1,7 @@
 venv/
+vector_db_embeddings.zip
+vector_db/
+dataset/
+dataset.zip
+tests/__pycache__/
+src/__pycache__/

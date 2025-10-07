@@ -234,7 +234,21 @@ _vector_store = None
 
 
 def get_vector_store():
-    pass
+    '''
+    In order to get the vector store (with Chroma), you must load the embeddings
+
+    returns:
+        vector_db : Chroma instance
+    '''
+
+    embeddings = HuggingFaceEmbeddings(
+        model_name="mixedbread-ai/mxbai-embed-large-v1",
+        model_kwargs={"device": "cpu"},
+        encode_kwargs={"normalize_embeddings": True}
+    )
+
+    vector_db = Chroma(collection_name = CHROMA_COLLECTION, persist_directory=CHROMA_DIR, embedding_function= embeddings)
+    return vector_db
 
 
 def make_query_prompt(query: str) -> str:
@@ -284,7 +298,20 @@ def search_products(query: str, top_k: int = 5):
     ]
     ```
     """
-    pass
+    query_text = make_query_prompt(query=query)
+    print(f'Query text: {query_text}')
+    vec_store = get_vector_store()
+    #perform similarity search
+    docs = vec_store.similarity_search(query_text, k = top_k)
+    print('Showing the results of the similarity search:')
+    
+    print('Printing all document results')
+    for i in docs: 
+        print(i.page_content)
+
+    return docs
+
+search_products("Milk")
 
 
 # TODO
@@ -343,7 +370,9 @@ def search_tool(query: str) -> str:
     search_tool("something high protein for breakfast")
     ```
     """
-    pass
+    product_name:str
+
+    search_products()
 
 
 # ---- UPDATED: Cart tools with quantity support ----
