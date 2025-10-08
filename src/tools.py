@@ -179,7 +179,35 @@ def structured_search_tool(
     LLM Usage Note:
     This tool is ideal for filtered browsing, purchase history analysis, or category breakdowns.
     """
-    pass
+
+    MAX_RESULTS = 100000
+
+    list_query_requests = []
+
+    if product_name != None:
+        #search by product name
+        list_query_requests.append(f'Item where its name contains [{product_name}]')
+    
+    if department != None:
+        #search by department
+        list_query_requests.append(f'Department must be equals than [{department}]')
+
+    if aisle != None:
+        #search by aisle
+        list_query_requests.append(f'Aisle must be equals than [{department}]')
+    
+    if history_only:
+        user_id = get_user_id()
+        print('current user: ' + user_id)
+        #1st check if user purchased something before
+        if user_id not in VALID_USER_IDS:
+            print("Raise error invalid user")
+            return None
+        #2nd list all products that were purchased by the user (using orders df)
+
+        
+
+
 
 
 # TODO
@@ -317,11 +345,11 @@ def search_products(query: str, top_k: int = 5):
 
         list_dict_products.append(dict_products)
 
-    #print(list_dict_products)
+    print(list_dict_products)
 
     return list_dict_products
 
-search_products("Milk")
+search_products("department = dairy eggs")
 
 
 # TODO
