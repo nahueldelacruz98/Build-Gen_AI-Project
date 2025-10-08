@@ -303,13 +303,23 @@ def search_products(query: str, top_k: int = 5):
     vec_store = get_vector_store()
     #perform similarity search
     docs = vec_store.similarity_search(query_text, k = top_k)
-    print('Showing the results of the similarity search:')
     
-    print('Printing all document results')
-    for i in docs: 
-        print(i.page_content)
+    print('Creating list of dicts...')
+    list_dict_products = []
 
-    return docs
+    for i in docs: 
+        #print(f"Content: {type(i.page_content)}")
+        #print(i.page_content)
+        #print(f"Metadata: {type(i.metadata)}")
+        #print(i.metadata)
+        dict_products = i.metadata
+        dict_products['text'] = i.page_content
+
+        list_dict_products.append(dict_products)
+
+    #print(list_dict_products)
+
+    return list_dict_products
 
 search_products("Milk")
 
@@ -370,10 +380,23 @@ def search_tool(query: str) -> str:
     search_tool("something high protein for breakfast")
     ```
     """
-    product_name:str
 
-    search_products()
+    list_products = search_products()
 
+    if len(list_products) == 0:
+        return "No products found matching your search."
+
+    list_responses = []
+
+    for p in list_products:
+        list_responses.append(f'''
+        {p['product_name']} (ID: {p['product_id']})
+        Aisle: {p['aisle']}
+        Department: {p['department']}
+        Details: {p['text']}
+        ''')
+
+    return '\n\n'.join(list_responses)
 
 # ---- UPDATED: Cart tools with quantity support ----
 from typing import Any, Dict, Optional
