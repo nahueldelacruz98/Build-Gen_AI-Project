@@ -182,33 +182,155 @@ def structured_search_tool(
 
     MAX_RESULTS = 100000
 
-    list_query_requests = []
+    # --- 1. Base Data Preparation: Join Catalog Metadata ---
+    # Start with the full product catalog and enrich it with department and aisle names
+    base_df = products.copy()
+    # Convert 'department_id' in both DataFrames to the same type (e.g., integer)
+    base_df["department_id"] = pd.to_numeric(base_df["department_id"], errors='coerce').fillna(-1).astype(int)
+    departments["department_id"] = pd.to_numeric(departments["department_id"], errors='coerce').fillna(-1).astype(int)
+    base_df = pd.merge(base_df, departments, on="department_id", how="left")
+    # It's highly likely 'aisle_id' will have the same issue, so preemptively fix it
+    base_df["aisle_id"] = pd.to_numeric(base_df["aisle_id"], errors='coerce').fillna(-1).astype(int)
+    aisles["aisle_id"] = pd.to_numeric(aisles["aisle_id"], errors='coerce').fillna(-1).astype(int)
 
-    if product_name != None:
-        #search by product name
-        list_query_requests.append(f'Item where its name contains [{product_name}]')
-    
-    if department != None:
-        #search by department
-        list_query_requests.append(f'Department must be equals than [{department}]')
+    base_df = pd.merge(base_df, aisles, on="aisle_id", how="left")
 
-    if aisle != None:
-        #search by aisle
-        list_query_requests.append(f'Aisle must be equals than [{department}]')
+    # Ensure department and aisle names are strings for filtering (as before)
+    base_df["department"] = base_df["department"].fillna("").astype(str)
+    base_df["aisle"] = base_df["aisle"].fillna("").astype(str)
+
+    df = base_df
     
+    # --- 2. History Filter & Aggregation ---
     if history_only:
         user_id = get_user_id()
-        print('current user: ' + user_id)
-        #1st check if user purchased something before
-        if user_id not in VALID_USER_IDS:
-            print("Raise error invalid user")
-            return None
-        #2nd list all products that were purchased by the user (using orders df)
+        if user_id is None or user_id not in VALID_USER_IDS:
+            return [{"error": f"Invalid user ID or user ID not set. Current ID: {user_id}"}]
+        
+        # Filter orders for the current user
+        user_orders = orders[orders["user_id"] == user_id]
+        
+        # Merge user's orders (order_id, product_id, reordered, add_to_cart_order)
+        # Note: We use 'prior' for product purchases and 'user_orders' for the user's order IDs
+        user_history_df = pd.merge(user_orders, prior, on='order_id', how='inner')
+        
+        # Group to calculate purchase statistics per product
+        product_stats = user_history_df.groupby("product_id").agg(
+            count=('order_id', 'nunique'), # Total orders containing this product
+            reordered=('reordered', lambda x: (x > 0).any()), # True if product was reordered at least once
+            avg_cart_order=('add_to_cart_order', 'mean'), # Avg position in cart
+        ).reset_index()
+        
+        # Rename columns for clarity and compliance with 'order_by'
+        product_stats = product_stats.rename(columns={
+            'count': 'count',
+            'reordered': 'reordered',
+            'avg_cart_order': 'add_to_cart_order' 
+        })
+        
+        # Merge the statistics back into the product catalog
+        df = pd.merge(base_df, product_stats, on="product_id", how="inner")
+        
+        # If history_only, we must have an inner join with stats, so we filter out products never bought
+        if df.empty:
+            return []
+    
+    # --- 3. Conditional Filtering ---
+    
+    # a. Product Name Filter (Case-insensitive substring match)
+    if product_name:
+        df = df[df["product_name"].str.contains(product_name, case=False, na=False)]
+    
+    # b. Department Filter (Exact match)
+    if department:
+        df = df[df["department"] == department]
+        
+    # c. Aisle Filter (Lowercased match)
+    if aisle:
+        # Convert aisle column and parameter to lowercase for robust matching
+        df = df[df["aisle"].str.lower() == aisle.lower()]
+        
+    # d. History Filters (Only meaningful if history_only=True)
+    if history_only:
+        # Reordered Filter
+        if reordered is not None:
+            # Filter for products that were reordered (reordered=True) or never reordered (reordered=False)
+            df = df[df["reordered"] == reordered]
+            
+        # Min Orders Filter
+        if min_orders is not None:
+            df = df[df["count"] >= min_orders]
 
+    # Stop if no products match the filters
+    if df.empty:
+        return []
+        
+    # --- 4. Grouping & Summarization ---
+    
+    if group_by:
+        # Group by department or aisle and count unique product_ids
+        grouped_df = df.groupby(group_by)["product_id"].nunique().reset_index()
+        grouped_df.columns = [group_by, "num_products"]
+        
+        # Order the grouped results (always by num_products)
+        grouped_df = grouped_df.sort_values(by="num_products", ascending=ascending)
+        
+        # Apply top_k
+        if top_k is not None:
+            grouped_df = grouped_df.head(top_k)
+            
+        # Select and rename columns for final output format
+        final_df = grouped_df
+        
+    else:
+        # No grouping, proceed with individual product rows
+        final_df = df
+        
+        # --- 5. Ordering and Limiting (Individual Products Only) ---
+        if order_by and history_only:
+            # 'count' or 'add_to_cart_order' requires history data
+            if order_by == "count":
+                sort_col = "count"
+            elif order_by == "add_to_cart_order":
+                sort_col = "add_to_cart_order"
+            else:
+                sort_col = None
+            
+            if sort_col and sort_col in final_df.columns:
+                final_df = final_df.sort_values(by=sort_col, ascending=ascending)
+        
+        # Apply top_k
+        if top_k is not None:
+            final_df = final_df.head(top_k)
+
+    # --- 6. Final Output Format ---
+    
+    # Define the columns to keep based on whether history was used
+    if history_only:
+        # Include all calculated stats columns
+        keep_cols = [
+            "product_id", "product_name", "aisle", "department", 
+            "count", "reordered", "add_to_cart_order"
+        ]
+    elif group_by:
+        # Grouped output columns
+        keep_cols = [group_by, "num_products"]
+    else:
+        # Full catalog output columns
+        keep_cols = ["product_id", "product_name", "aisle", "department"]
+        
+    # Select only the relevant columns and convert to list of dicts
+    # Handle cases where columns might be missing due to grouping/filtering
+    final_cols = [col for col in keep_cols if col in final_df.columns]
+    
+    # Ensure no more than MAX_RESULTS are returned
+    output_list = final_df[final_cols].head(MAX_RESULTS).to_dict(orient="records")
+    
+    return output_list
         
 
-
-
+#list_results = structured_search_tool.invoke({"product_name": "milk"})
+#print(f"Results: {list_results}")
 
 # TODO
 class RouteToCustomerSupport(BaseModel):
@@ -349,7 +471,7 @@ def search_products(query: str, top_k: int = 5):
 
     return list_dict_products
 
-search_products("department = dairy eggs")
+#search_products("department = dairy eggs")
 
 
 # TODO
@@ -409,7 +531,7 @@ def search_tool(query: str) -> str:
     ```
     """
 
-    list_products = search_products()
+    list_products = search_products(query=query) 
 
     if len(list_products) == 0:
         return "No products found matching your search."
@@ -575,7 +697,19 @@ def create_tool_node_with_fallback(tools: list) -> ToolNode:
     Returns:
     - ToolNode: A LangGraph-compatible tool node with error fallback logic.
     """
-    pass
+    # 1. Create the base ToolNode
+    tool_node = ToolNode(tools)
+
+    # 2. Fix: Wrap the function in RunnableLambda to make it a valid Runnable for fallbacks
+    error_handler_runnable = RunnableLambda(handle_tool_error)
+
+    # 3. Attach the fallback mechanism using the Runnable
+    node_with_fallback = tool_node.with_fallbacks(
+        fallbacks=[error_handler_runnable], # Use the wrapped Runnable
+        exception_key="error"
+    )
+
+    return node_with_fallback
 
 
 __all__ = [
